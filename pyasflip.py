@@ -16,6 +16,7 @@
 import taichi as ti
 import numpy as np
 from enum import Enum, auto
+import partio
 
 # Advection schemes
 class AdvectionType(Enum):
@@ -109,15 +110,17 @@ paused = False
 
 # A larger value can be used for higher-res simulations
 quality = 1
-n_grid = 96 * quality
+n_grid = int(96 * quality)
 dx, inv_dx = 1 / n_grid, float(n_grid)
 
 # Particle source setting
 init_particle_center_x = 0.5
-init_particle_center_y = 0.15 + dx * 3.0
-init_particle_size_x = 1.0 - dx * 6.0
-init_particle_size_y = 0.3
+init_particle_center_y = 0.75 + dx * 3.0
+init_particle_size_x = 0.2
+init_particle_size_y = 0.2
 n_particles = int(init_particle_size_x * init_particle_size_y * n_grid * n_grid * 9)
+init_ball_radius = 0.1
+n_solid_particles = int(3.14 * init_ball_radius * init_ball_radius * n_grid * n_grid * 9)
 
 # dt setting
 frame_dt = 4e-3
@@ -129,11 +132,12 @@ p_mass = p_vol * p_rho
 
 # mechanics parameters
 # Young's modulus and Poisson's ratio
-E, nu = 5e5, 0.3
+E, nu = 3e4, 0.3
+# E_solid, nu_solid = 3000, 0.4
 # Bulk modulus and shear modulus
 kappa_0, mu_0 = E / (3 * (1 - nu * 2)), E / (2 * (1 + nu))
 # plasticity parameters
-friction_angle = 40.0
+friction_angle = 0
 sin_phi = ti.sin(friction_angle / 180.0 * 3.141592653)
 material_friction = 1.633 * sin_phi / (3.0 - sin_phi)
 volume_recovery_rate = 0.3   # rate for volume recovery, tuned for stability
@@ -155,12 +159,17 @@ capsule_friction = 1.0 - ti.exp(-0.4332 * dt / (dx * dx))
 ground_friction = 1.0 - ti.exp(-0.1394 * dt / (dx * dx))
 side_friction = 0.0
 
+pinned_center_x = init_particle_center_x
+pinned_center_y = init_particle_center_y - 0.3
+
 # Material points
-x = ti.Vector.field(2, dtype=float, shape=n_particles)  # position
-v = ti.Vector.field(2, dtype=float, shape=n_particles)  # velocity
-C = ti.Matrix.field(2, 2, dtype=float, shape=n_particles)  # affine velocity field
-F = ti.Matrix.field(2, 2, dtype=float, shape=n_particles)  # deformation gradient
-logSp = ti.field(dtype=float, shape=n_particles)  # plastic deformation
+n_total_particles = n_particles + n_solid_particles
+mat_type = ti.Vector.field(1, dtype=int, shape=n_total_particles)  # solid/fluid
+x = ti.Vector.field(2, dtype=float, shape=n_total_particles)  # position
+v = ti.Vector.field(2, dtype=float, shape=n_total_particles)  # velocity
+C = ti.Matrix.field(2, 2, dtype=float, shape=n_total_particles)  # affine velocity field
+F = ti.Matrix.field(2, 2, dtype=float, shape=n_total_particles)  # deformation gradient
+logSp = ti.field(dtype=float, shape=n_total_particles)  # plastic deformation
 grid_v = ti.Vector.field(
   2, dtype=float, shape=(n_grid, n_grid)
 )  # grid node momentum/velocity
@@ -315,6 +324,7 @@ def Substep():
   rc0 = (param_apic_str + param_apic_rot) * 0.5
   rc1 = (param_apic_str - param_apic_rot) * 0.5
   for p in x:
+    mattype = mat_type[p]
     xp = x[p]
     vp = v[p]
     base = (xp * inv_dx - 0.5).cast(int)
@@ -327,7 +337,8 @@ def Substep():
     Fp = (ti.Matrix.identity(float, 2) + dt * Cp) @ Fp
     U, sig, V = ti.svd(Fp)
     # Plasticity flow
-    ProjectDruckerPrager(sig, logSp[p])
+    if mattype[0] == 0:
+      ProjectDruckerPrager(sig, logSp[p])
     # Reconstruct elastic deformation gradient after plasticity
     F[p] = U @ sig @ V.transpose()
     stress = NeoHookeanElasticity(U, sig)
@@ -366,11 +377,11 @@ def Substep():
         nvel[0] *= 1.0 - side_friction
         nvel[1] = 0
       # Boundary condition at capsule
-      npos = ti.Vector([i, j]).cast(float) * dx
-      inside, dotnv, diff_vel, n = CheckSdfCapsule(npos, nvel)
-      if inside:
-        dotnv_frac = dotnv * (1.0 - capsule_friction)
-        nvel += diff_vel * capsule_friction + n * dotnv_frac
+      # npos = ti.Vector([i, j]).cast(float) * dx
+      # inside, dotnv, diff_vel, n = CheckSdfCapsule(npos, nvel)
+      # if inside:
+      #   dotnv_frac = dotnv * (1.0 - capsule_friction)
+      #   nvel += diff_vel * capsule_friction + n * dotnv_frac
       grid_v[i, j] = nvel
 
   # grid to particle (G2P)
@@ -391,6 +402,15 @@ def Substep():
       weight = w[i][0] * w[j][1]
       new_v += weight * g_v
       new_C += 4 * inv_dx * weight * g_v.outer_product(dpos)
+
+    # pinned force update new_v
+    pinned_center = ti.Vector([pinned_center_x, pinned_center_y])
+    if (xp - pinned_center).norm() < init_ball_radius + 0.5 and mat_type[p][0] == 1:
+      xt = xp + dt * v[p]
+      k = -10000
+      fp = -k * (xp - xt)
+      new_v = new_v + fp
+
     # Check if velocity adjustment is used (for any xFLIP)
     if param_flip_vel_adj > 0.0:
       vp = v[p]
@@ -427,6 +447,7 @@ def Substep():
 # Function to reset the simulation
 @ti.kernel
 def Reset():
+  # fluid
   for i in range(n_particles):
     x[i] = [
       (ti.random() - 0.5) * init_particle_size_x + init_particle_center_x,
@@ -436,6 +457,28 @@ def Reset():
     F[i] = ti.Matrix([[1, 0], [0, 1]])
     logSp[i] = 0.0
     C[i] = ti.Matrix.zero(float, 2, 2)
+    mat_type[i] = 0
+
+  # solid
+  for i in range(n_particles + 1, n_total_particles):
+    x[i] = [
+      (ti.random() - 0.5) * init_particle_size_x + pinned_center_x,
+      (ti.random() - 0.5) * init_particle_size_y + pinned_center_y,
+    ]
+    # sin: -pi/2 ~ pi/2
+    # cos: 0 ~ pi
+    theta = ti.random() * 2 * 3.14
+    r = ti.random()
+    x[i] = [
+      ti.cos(theta) * ti.sqrt(r) * init_ball_radius + pinned_center_x,
+      ti.sin(theta) * ti.sqrt(r) * init_ball_radius + pinned_center_y
+    ]
+    v[i] = [0, 0]
+    F[i] = ti.Matrix([[1, 0], [0, 1]])
+    logSp[i] = 0.0
+    C[i] = ti.Matrix.zero(float, 2, 2)
+    mat_type[i] = 1
+  
   gravity[None] = [0, -9.81]
   capsule_translation[None] = [init_capsule_center_x, init_capsule_center_y]
   capsule_trans_vel[None] = [0, init_capsule_vel_y]
@@ -501,7 +544,17 @@ PrintScheme()
 frame = 0
 wid_frame = gui.label("Frame")
 wid_frame.value = frame
+
+particle_set = partio.create()
+particle_set_position = particle_set.addAttribute("position", partio.VECTOR, 3)
+particle_set.addParticles(n_total_particles)
+
 while True:
+  # export particles data
+  for i in range(0, n_total_particles):
+    particle_set.set(particle_set_position, i, (x[i][0], x[i][1], 0.0))
+  partio.write("./output/part_" + str(frame) + ".bgeo", particle_set)
+
   # Handle keyboard input
   if gui.get_event(ti.GUI.PRESS):
     if gui.event.key == "r":
@@ -547,16 +600,17 @@ while True:
     # if frame == 210: paused = True
     frame += 1
     wid_frame.value = frame
-    if frame > capsule_move_frame:
-      capsule_trans_vel[None] = [0, 0]
+    # if frame > capsule_move_frame:
+    #   capsule_trans_vel[None] = [0, 0]
   # draw particles and UI
-  gui.circles(x.to_numpy(), radius=1.5, color=0x068587)
-  DrawCapsule(
-    gui,
-    capsule_radius,
-    capsule_half_length,
-    capsule_translation,
-    capsule_rotation,
-    0x035354,
-  )
+  gui.circles(x.to_numpy()[0 : n_particles], radius=1.5, color=0x068587)
+  gui.circles(x.to_numpy()[n_particles + 1 : n_total_particles], radius=1.5, color=0x042587)
+  # DrawCapsule(
+  #   gui,
+  #   capsule_radius,
+  #   capsule_half_length,
+  #   capsule_translation,
+  #   capsule_rotation,
+  #   0x035354,
+  # )
   gui.show()  # Change to gui.show(f'{frame:06d}.png') to write images to disk
