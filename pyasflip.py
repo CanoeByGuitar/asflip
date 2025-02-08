@@ -22,7 +22,7 @@ window_res = 512
 paused = False
 import poisson_disk as pd
 import poisson_disk_2 as pd2
-# import partio
+import partio
 
 # Advection schemes
 class AdvectionType(Enum):
@@ -565,15 +565,15 @@ frame = 0
 wid_frame = gui.label("Frame")
 wid_frame.value = frame
 
-# particle_set = partio.create()
-# particle_set_position = particle_set.addAttribute("position", partio.VECTOR, 3)
-# particle_set.addParticles(n_total_particles)
+particle_set = partio.create()
+particle_set_position = particle_set.addAttribute("position", partio.VECTOR, 3)
+particle_set.addParticles(n_total_particles)
 
 while True:
   # export particles data
-  # for i in range(0, n_total_particles):
-  #   particle_set.set(particle_set_position, i, (x[i][0], x[i][1], 0.0))
-  # partio.write("./output/part_" + str(frame) + ".bgeo", particle_set)
+  for i in range(0, n_total_particles):
+    particle_set.set(particle_set_position, i, (x[i][0], x[i][1], 0.0))
+  partio.write("./output/part_" + str(frame) + ".bgeo", particle_set)
 
   # Handle keyboard input
   if gui.get_event(ti.GUI.PRESS):
