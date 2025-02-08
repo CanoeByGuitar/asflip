@@ -16,7 +16,13 @@
 import taichi as ti
 import numpy as np
 from enum import Enum, auto
-import partio
+# Run Taichi on GPU
+ti.init(arch=ti.gpu)
+window_res = 512
+paused = False
+import poisson_disk as pd
+import poisson_disk_2 as pd2
+# import partio
 
 # Advection schemes
 class AdvectionType(Enum):
@@ -103,10 +109,7 @@ current_advection = SetupAdvection(AdvectionType.ASFLIP)
 # Scheme label position
 scheme_label_offset_x = -0.07
 
-# Run Taichi on GPU
-ti.init()
-window_res = 512
-paused = False
+
 
 # A larger value can be used for higher-res simulations
 quality = 1
@@ -179,6 +182,22 @@ grid_v0 = ti.Vector.field(
 grid_m = ti.field(dtype=float, shape=(n_grid, n_grid))  # grid node mass
 gravity = ti.Vector.field(2, dtype=float, shape=())
 adv_params = ti.Vector.field(6, dtype=float, shape=())
+
+max_attemp = ti.Vector.field(1, dtype=int, shape=1)
+
+pd.grid_n = n_grid
+pd.desired_samples = n_solid_particles
+pd.sdf_center = ti.Vector([pinned_center_x, pinned_center_y])
+pd.sdf_radius = init_ball_radius
+pd.set_param()
+n_sample = pd.poisson_disk_sample()
+# print("[pd]", n_sample)
+
+pd2.grid_n = n_grid
+pd2.desired_samples = n_solid_particles
+pd2.set_param()
+n_sample_2 = pd2.poisson_disk_sample()
+print("[pd2]", n_sample_2)
 
 # Function converting world space coordinates to local (object) space
 @ti.func
@@ -449,10 +468,11 @@ def Substep():
 def Reset():
   # fluid
   for i in range(n_particles):
-    x[i] = [
-      (ti.random() - 0.5) * init_particle_size_x + init_particle_center_x,
-      (ti.random() - 0.5) * init_particle_size_y + init_particle_center_y + 0.05,
-    ]
+    # x[i] = [
+    #   (ti.random() - 0.5) * init_particle_size_x + init_particle_center_x,
+    #   (ti.random() - 0.5) * init_particle_size_y + init_particle_center_y + 0.05,
+    # ]
+    x[i] = pd2.samples[i]
     v[i] = [0, 0]
     F[i] = ti.Matrix([[1, 0], [0, 1]])
     logSp[i] = 0.0
@@ -460,19 +480,19 @@ def Reset():
     mat_type[i] = 0
 
   # solid
-  for i in range(n_particles + 1, n_total_particles):
-    x[i] = [
-      (ti.random() - 0.5) * init_particle_size_x + pinned_center_x,
-      (ti.random() - 0.5) * init_particle_size_y + pinned_center_y,
-    ]
-    # sin: -pi/2 ~ pi/2
-    # cos: 0 ~ pi
-    theta = ti.random() * 2 * 3.14
-    r = ti.random()
-    x[i] = [
-      ti.cos(theta) * ti.sqrt(r) * init_ball_radius + pinned_center_x,
-      ti.sin(theta) * ti.sqrt(r) * init_ball_radius + pinned_center_y
-    ]
+  center = [pinned_center_x, pinned_center_y]
+  ppc = 9
+  min_distance = ti.sqrt(ti.pow(dx, 2) / ppc * (2 / 3))
+  # max_attemp[0] = pd.PDSampleInCircleDartThrowing(x, n_particles, center, init_ball_radius, n_solid_particles, 0.1)
+  
+  for i in range(n_particles, n_particles + n_solid_particles):
+    # theta = ti.random() * 2 * 3.14
+    # r = ti.random()
+    # x[i] = [
+    #   ti.cos(theta) * ti.sqrt(r) * init_ball_radius + pinned_center_x,
+    #   ti.sin(theta) * ti.sqrt(r) * init_ball_radius + pinned_center_y
+    # ]
+    x[i] = pd.samples[i - n_particles]
     v[i] = [0, 0]
     F[i] = ti.Matrix([[1, 0], [0, 1]])
     logSp[i] = 0.0
@@ -545,20 +565,21 @@ frame = 0
 wid_frame = gui.label("Frame")
 wid_frame.value = frame
 
-particle_set = partio.create()
-particle_set_position = particle_set.addAttribute("position", partio.VECTOR, 3)
-particle_set.addParticles(n_total_particles)
+# particle_set = partio.create()
+# particle_set_position = particle_set.addAttribute("position", partio.VECTOR, 3)
+# particle_set.addParticles(n_total_particles)
 
 while True:
   # export particles data
-  for i in range(0, n_total_particles):
-    particle_set.set(particle_set_position, i, (x[i][0], x[i][1], 0.0))
-  partio.write("./output/part_" + str(frame) + ".bgeo", particle_set)
+  # for i in range(0, n_total_particles):
+  #   particle_set.set(particle_set_position, i, (x[i][0], x[i][1], 0.0))
+  # partio.write("./output/part_" + str(frame) + ".bgeo", particle_set)
 
   # Handle keyboard input
   if gui.get_event(ti.GUI.PRESS):
     if gui.event.key == "r":
       Reset()
+      print("[max_attemp]", max_attemp[0])
       frame = 0
     elif gui.event.key in [ti.GUI.ESCAPE, ti.GUI.EXIT]:
       break
