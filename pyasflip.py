@@ -104,7 +104,7 @@ current_advection = SetupAdvection(AdvectionType.ASFLIP)
 scheme_label_offset_x = -0.07
 
 # Run Taichi on GPU
-ti.init(arch=ti.gpu)
+ti.init()
 window_res = 512
 paused = False
 
@@ -115,7 +115,7 @@ dx, inv_dx = 1 / n_grid, float(n_grid)
 
 # Particle source setting
 init_particle_center_x = 0.5
-init_particle_center_y = 0.75 + dx * 3.0
+init_particle_center_y = 0.75
 init_particle_size_x = 0.2
 init_particle_size_y = 0.2
 n_particles = int(init_particle_size_x * init_particle_size_y * n_grid * n_grid * 9)
@@ -123,7 +123,7 @@ init_ball_radius = 0.1
 n_solid_particles = int(3.14 * init_ball_radius * init_ball_radius * n_grid * n_grid * 9)
 
 # dt setting
-frame_dt = 4e-3
+frame_dt = 1 / 30
 dt = 1e-4 / quality
 
 # volume and mass
@@ -451,7 +451,7 @@ def Reset():
   for i in range(n_particles):
     x[i] = [
       (ti.random() - 0.5) * init_particle_size_x + init_particle_center_x,
-      (ti.random() - 0.5) * init_particle_size_y + init_particle_center_y,
+      (ti.random() - 0.5) * init_particle_size_y + init_particle_center_y + 0.05,
     ]
     v[i] = [0, 0]
     F[i] = ti.Matrix([[1, 0], [0, 1]])

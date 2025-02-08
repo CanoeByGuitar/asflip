@@ -1,0 +1,4 @@
+cmake ./ \
+-DPython_INCLUDE_DIR=/home/chenhui/anaconda3/envs/asflip/include/python3.7m \
+-DPython_LIBRARY=/home/chenhui/anaconda3/envs/asflip/lib  \
+-DPython_EXECUTABLE=/home/chenhui/anaconda3/envs/asflip/bin/python
